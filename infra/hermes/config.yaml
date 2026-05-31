@@ -1,0 +1,31 @@
+# Hermes Agent Configuration — mounted ke container di /opt/data/config.yaml
+# PENTING: gunakan nama Docker service ('redis', 'postgres'), bukan localhost
+# Sintaks ${VAR} akan diganti dengan environment variable dari container
+
+# ── Model Configuration ───────────────────────────────────
+model:
+  provider: openai-api                          # OpenRouter pakai format OpenAI-compatible
+  model: nousresearch/hermes-3-llama-3.1-405b:free
+  base_url: https://openrouter.ai/api/v1
+  api_key: ${OPENROUTER_API_KEY}
+
+# ── MCP Servers ───────────────────────────────────────────
+# Tool integration — Hermes bisa baca Redis dan PostgreSQL
+mcp_servers:
+  redis:
+    command: npx
+    args: ["-y", "mcp-server-redis"]
+    env:
+      REDIS_URL: "redis://redis:6379"           # 'redis' = Docker service name
+
+  postgres:
+    command: npx
+    args:
+      - "-y"
+      - "@modelcontextprotocol/server-postgres"
+      - "postgresql://marsha:${POSTGRES_PASSWORD}@postgres:5432/marsha_agent"
+      # 'postgres' = Docker service name
+
+# ── Provider Routing ──────────────────────────────────────
+provider_routing:
+  sort: "throughput"                            # prioritaskan kecepatan respons

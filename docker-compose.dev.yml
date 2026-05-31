@@ -1,0 +1,16 @@
+# Override untuk development lokal — expose database ports agar bisa diakses dari host
+services:
+  postgres:
+    ports:
+      - "5432:5432"   # untuk koneksi lokal (DBeaver, pgAdmin, dll)
+
+  redis:
+    ports:
+      - "6380:6379"   # port 6380 di host → 6379 di container (6379 mungkin sudah dipakai)
+
+  api-gateway:
+    build:
+      target: development
+    volumes:
+      - ./services/api-gateway/gateway:/app/gateway
+    command: ["uv", "run", "uvicorn", "gateway.main:app", "--reload", "--host", "0.0.0.0", "--port", "8000"]
