@@ -87,46 +87,55 @@ skills:
     telegram: [correlation-analysis]
 ```
 
-## Langkah 4 — Restart Hermes
+## Langkah 4 — Reload
 
-Skill dibaca saat Hermes start. Setelah menambah atau mengubah skill:
+Restart container adalah cara paling **pasti** supaya perubahan skill
+kebaca (dan ini yang divalidasi langsung — restart terbukti aman, downtime
+Telegram cuma hitungan detik):
 
 ```bash
 docker compose restart hermes
 ```
 
+Kalau cuma edit teks skill Markdown (bukan nambah MCP server baru), kemungkinan
+besar cukup mulai sesi chat baru (`/new` di Telegram) tanpa restart container —
+ini belum divalidasi seketat SOUL.md (lihat catatan di Langkah 5), jadi kalau
+ragu, restart saja.
+
 ## Langkah 5 — Verifikasi
 
-Test skill via CLI di dalam container:
+Tergantung kapan skill itu dipakai:
 
-```bash
-docker exec -it hermes /opt/hermes/.venv/bin/hermes
-```
-
-Atau via API:
-
-```bash
-curl -X POST http://localhost:8642/v1/runs \
-  -H "Authorization: Bearer $HERMES_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "input": "Jalankan correlation analysis untuk AAPL dan MSFT",
-    "instructions": "Gunakan skill correlation-analysis"
-  }'
-```
+- **Skill persona/on-demand** (dipanggil lewat `delegate_task` atau chat
+  langsung): chat ke Marsha di Telegram dan minta sesuatu yang memicu skill
+  itu, lalu baca balasannya.
+- **Skill yang dipicu cron** (mis. `marsha-orchestrator` lewat sesi one-shot
+  yang dibuat `marsha-chat-dispatcher`): trigger manual dengan
+  `docker compose exec hermes hermes cron run <nama-job>` dan cek hasilnya
+  (lihat [how-to/setup-cron-jobs.md](./setup-cron-jobs.md)).
+- Kalau hasilnya masih pakai versi lama setelah dites, coba mulai sesi chat
+  baru dulu (`/new` di Telegram) — Hermes meng-cache system prompt per sesi
+  percakapan yang sedang berjalan (terverifikasi lewat `SOUL.md`: edit file
+  + restart container saja tidak cukup kalau sesi chat-nya masih yang lama).
+  Kalau `/new` belum cukup, `docker compose restart hermes` (lihat Langkah 4).
 
 ## Skill yang Sudah Ada
 
 | Skill | Fungsi |
 |------|--------|
-| `infra/hermes/skills/marsha-orchestrator/SKILL.md` | Orchestrator pipeline (analyst → researcher → decision) |
-| `infra/hermes/skills/analyst-{technical,sentiment,news,fundamentals}/SKILL.md` | Persona tiap analyst (sumber kanonik; di-inline ke context delegate) |
-| `infra/hermes/skills/trading-risk-review/SKILL.md` | Risk monitoring berkala, runs setiap 15 menit |
+| `infra/hermes/skills/marsha-chat-dispatcher/SKILL.md` | Dipakai di setiap pesan live-chat — klasifikasi permintaan analisis baru / approve-reject / obrolan biasa |
+| `infra/hermes/skills/marsha-orchestrator/SKILL.md` | Pipeline analisis penuh (analyst → researcher → decision), jalan di sesi cron one-shot terpisah |
+| `infra/hermes/skills/analyst-{technical,sentiment,news,fundamentals}/SKILL.md` | Persona tiap analyst (sumber kanonik; di-inline ke context delegate di `marsha-orchestrator`) |
 
 ## Tips
 
-**Gunakan Redis sebagai papan tulis.** Jika skill perlu menyimpan hasil sementara yang akan dibaca skill lain atau subagent lain, gunakan Redis via MCP tool. Ikuti konvensi key yang sudah ada (lihat [reference/redis-keys.md](../reference/redis-keys.md)).
-
-**Referensikan PostgreSQL untuk data historis.** Untuk data yang perlu persisten (keputusan, laporan, audit trail), instruksikan Hermes untuk menyimpan ke PostgreSQL via MCP tool.
+**Tidak ada papan tulis Redis.** Redis/Postgres sudah dilepas sementara (lihat
+[explanation/multi-agent.md](../explanation/multi-agent.md#tanpa-papan-tulis-redis))
+— hasil `delegate_task` kembali langsung ke konteks pemanggil, bukan disimpan
+ke storage bersama. Kalau skill butuh data eksternal deterministik (harga,
+funding rate, dst.), buat/pakai **tool** (MCP, lihat
+`infra/hermes/scripts/fundamentals_mcp.py` untuk contoh server MCP stdio
+ringan lewat `uv run --script`) — skill Markdown-nya tinggal bilang kapan
+tool itu dipanggil dan cara menafsirkan hasilnya.
 
 **Gunakan `delegate_task()` untuk pekerjaan paralel.** Jika skill melibatkan beberapa analisis independen, delegasikan ke subagent agar berjalan paralel. Lihat [explanation/multi-agent.md](../explanation/multi-agent.md).
