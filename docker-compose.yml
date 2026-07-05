@@ -1,88 +1,55 @@
 services:
 
-  # ── Database ─────────────────────────────────────────────
-  postgres:
-    image: pgvector/pgvector:pg17
-    restart: unless-stopped
-    environment:
-      POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      POSTGRES_DB: ${POSTGRES_DB}
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-      - ./infra/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
-    networks:
-      - marsha-net
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
-
-  redis:
-    image: redis:8.8.0-alpine
-    restart: unless-stopped
-    command: redis-server --maxmemory 512mb --maxmemory-policy allkeys-lru
-    volumes:
-      - redis_data:/data
-    networks:
-      - marsha-net
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
-      timeout: 3s
-      retries: 5
-
   # ── Hermes AI Agent ──────────────────────────────────────
+  # /opt/data = HERMES_HOME: dikelola & DITULIS Hermes (config, SOUL, skills bundled +
+  # .hub, sessions, memories, logs, auth, profiles). Lihat docs/how-to/hermes-docker.md.
+  #
+  # ATURAN PENTING: JANGAN meng-overlay subdir yang ditulis Hermes (mis. /opt/data/skills)
+  # sebagai read-only — itu memblok chown-sweep saat boot dan bikin Permission denied.
+  # Pola mount (hybrid, ramah git):
+  #   - named volume hermes_data → /opt/data        : state runtime persisten (di-chown tiap boot)
+  #   - config.yaml & SOUL.md    → read-only file    : versioned, boleh diedit di host
+  #   - skill custom             → /opt/data/external-skills (ro) + skills.external_dirs di config
+  # Permission self-heal: stage2 chown-sweep jalan tiap boot (uid 10000). CLI `hermes` via
+  # `docker exec` otomatis drop ke uid 10000 (shim) — jangan tulis /opt/data via sh/chown root.
+  #
+  # postgres & redis DIHAPUS SEMENTARA (2026-07) -- tidak ada konsumen aktif: MCP nonaktif,
+  # api-gateway (penulis Postgres) sudah dihapus, quant-bot (penulis Redis telemetry) belum
+  # pernah ada, dan pipeline analisis sekarang pakai in-session context, bukan whiteboard
+  # Redis. Tambahkan lagi begitu quant-bot/MCP digarap.
   hermes:
     image: nousresearch/hermes-agent:latest
     container_name: hermes
     restart: unless-stopped
     command: gateway run
+    shm_size: "1g"                          # image bawa Playwright/Chromium — cegah crash shm
     ports:
-      - "8642:8642"
+      - "8642:8642"                         # gateway API
+      - "127.0.0.1:9119:9119"               # dashboard — HANYA loopback host (lihat env di bawah)
     volumes:
       - hermes_data:/opt/data
       - ./infra/hermes/config.yaml:/opt/data/config.yaml:ro
-      - ./hermes-skills:/opt/data/skills:ro
+      - ./infra/hermes/SOUL.md:/opt/data/SOUL.md:ro
+      - ./infra/hermes/skills:/opt/data/external-skills:ro
+      - ./infra/hermes/scripts:/opt/data/scripts:ro
     environment:
       - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+      - TELEGRAM_ALLOWED_USERS=${TELEGRAM_ALLOWED_USERS}
+      - TELEGRAM_GROUP_ID=${TELEGRAM_GROUP_ID}
+      # Dashboard monitoring (opsional). INSECURE aman di sini KARENA port hanya
+      # dipublish ke 127.0.0.1 host. Jangan pakai INSECURE bila port diekspos ke jaringan.
+      - HERMES_DASHBOARD=1
+      - HERMES_DASHBOARD_INSECURE=1
     networks:
       - marsha-net
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
     deploy:
       resources:
         limits:
           memory: 4G
           cpus: "2.0"
-
-  # ── FastAPI Gateway ───────────────────────────────────────
-  api-gateway:
-    build:
-      context: ./services/api-gateway
-      target: production
-    restart: unless-stopped
-    ports:
-      - "8000:8000"
-    environment:
-      POSTGRES_HOST: postgres
-      POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      POSTGRES_DB: ${POSTGRES_DB}
-      REDIS_HOST: redis
-      API_SECRET_KEY: ${API_SECRET_KEY}
-    networks:
-      - marsha-net
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
+        reservations:
+          memory: 2G
 
 # ── Networks ──────────────────────────────────────────────
 networks:
@@ -91,6 +58,4 @@ networks:
 
 # ── Volumes ───────────────────────────────────────────────
 volumes:
-  postgres_data:
-  redis_data:
   hermes_data:

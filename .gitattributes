@@ -1,0 +1,6 @@
+* text=auto eol=lf
+
+# Shell scripts run inside Linux containers (Hermes cron) -- CRLF breaks bash
+# with a `$'\r': command not found` error. Force LF regardless of the
+# checkout platform (this repo is mostly developed on Windows).
+*.sh text eol=lf

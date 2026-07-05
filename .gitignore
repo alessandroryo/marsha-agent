@@ -1,22 +1,54 @@
-# Python
+# ── Python ────────────────────────────────────────────────
 __pycache__/
 *.py[cod]
+*.pyo
 .venv/
+venv/
 *.egg-info/
 dist/
+build/
 .pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
 
-# Environment — JANGAN commit .env karena ada secrets
+# ── Environment & Secrets ─────────────────────────────────
 .env
 .env.local
+.env.*.local
+*.pem
+*.key
 
-# uv
+# ── uv ────────────────────────────────────────────────────
 uv.lock
 
-# OS
+# ── Docker ────────────────────────────────────────────────
+docker-compose.override.yml
+
+# ── Logs ──────────────────────────────────────────────────
+*.log
+logs/
+
+# ── Market Data & Backtesting ─────────────────────────────
+data/
+*.csv
+*.parquet
+*.feather
+backtest_results/
+
+# ── Claude Code & Agent Tools ─────────────────────────────
+.claude/
+.agents/
+skills-lock.json
+
+# ── OS ────────────────────────────────────────────────────
 .DS_Store
 Thumbs.db
+desktop.ini
 
-# IDE
+# ── IDE ───────────────────────────────────────────────────
 .vscode/
 .idea/
+*.swp
+*.swo

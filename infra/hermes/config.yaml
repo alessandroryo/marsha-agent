@@ -3,29 +3,106 @@
 # Sintaks ${VAR} akan diganti dengan environment variable dari container
 
 # ── Model Configuration ───────────────────────────────────
+# Provider OpenRouter. Model HARUS mendukung tool use (delegate_task + MCP).
+# Model :free tidak mendukung tool use — jangan dipakai untuk orchestrator.
+custom_providers:
+  - name: openrouter
+    base_url: https://openrouter.ai/api/v1
+    key_env: OPENROUTER_API_KEY
+
+# Tier KUAT — Marsha (orchestrator) + decision layer (Researcher/Trader/Risk/PM)
+# yang berjalan di main loop. Lihat docs/explanation/multi-agent.md.
 model:
-  provider: openai-api                          # OpenRouter pakai format OpenAI-compatible
-  model: nousresearch/hermes-3-llama-3.1-405b:free
-  base_url: https://openrouter.ai/api/v1
-  api_key: ${OPENROUTER_API_KEY}
+  default: deepseek/deepseek-v4-flash
+  provider: custom:openrouter
 
-# ── MCP Servers ───────────────────────────────────────────
-# Tool integration — Hermes bisa baca Redis dan PostgreSQL
+# Tier MURAH — SEMUA sub-agent hasil delegate_task (4 analyst paralel di Fase 1).
+# Catatan: Hermes hanya punya 2 tier model (main vs delegation), bukan per-role.
+# Model per-agent belum didukung Hermes (open feature request) — lihat plan.
+delegation:
+  model: qwen/qwen3.5-9b
+  provider: custom:openrouter
+  max_concurrent_children: 4   # 4 analyst (Technical/Sentiment/News/Fundamentals) jalan paralel
+
+# ── MCP Servers (DINONAKTIFKAN SEMENTARA) ─────────────────
+# Pendekatan stdio via npx bermasalah saat bring-up awal:
+#   - redis: paket 'mcp-server-redis' gagal konek ('Connection closed')
+#   - init MCP menahan startup gateway → Telegram tak kunjung online
+# Marsha TETAP bisa chat tanpa MCP. Aktifkan lagi setelah MCP diverifikasi
+# (paket redis yang benar / uji server-postgres / atau pakai api-gateway /mcp — ADR-006).
+# Saat dinonaktifkan: skill yang butuh Redis/Postgres (risk-review, whiteboard
+# orchestrator) belum berfungsi penuh.
+# mcp_servers:
+#   redis:
+#     command: npx
+#     args: ["-y", "mcp-server-redis"]
+#     env:
+#       REDIS_URL: "redis://redis:6379"           # 'redis' = Docker service name
+#   postgres:
+#     command: npx
+#     args:
+#       - "-y"
+#       - "@modelcontextprotocol/server-postgres"
+#       - "postgresql://marsha:${POSTGRES_PASSWORD}@postgres:5432/marsha_agent"
+
+# ── MCP Servers: fundamentals (AKTIF, terpisah dari blok di atas) ─────────
+# Server MCP stdio ringan (subprocess `uv run --script`, BUKAN service baru --
+# tidak ada container/port tambahan, sama seperti wrapper news-scout.sh).
+# Read-only, tanpa state -- beri Marsha kemampuan cari funding rate/OI/harga/
+# market cap live untuk simbol perpetual APAPUN saat chat (bukan cuma
+# BTC/ETH tetap dari cron fundamentals-fetcher). Lihat
+# infra/hermes/scripts/fundamentals/core.py untuk logic yang dipakai bareng.
 mcp_servers:
-  redis:
-    command: npx
-    args: ["-y", "mcp-server-redis"]
-    env:
-      REDIS_URL: "redis://redis:6379"           # 'redis' = Docker service name
+  fundamentals:
+    command: uv
+    args: ["run", "--script", "/opt/data/scripts/fundamentals_mcp.py"]
+    timeout: 30
 
-  postgres:
-    command: npx
-    args:
-      - "-y"
-      - "@modelcontextprotocol/server-postgres"
-      - "postgresql://marsha:${POSTGRES_PASSWORD}@postgres:5432/marsha_agent"
-      # 'postgres' = Docker service name
+# ── Skills (custom, di-mount sebagai external dir) ────────
+# /opt/data/skills = dir SoT Hermes (read-write: skill bundled + .hub) — JANGAN di-overlay
+# read-only. Skill kita di-mount terpisah di /opt/data/external-skills (read-only) dan
+# didaftarkan di sini agar ikut dipindai.
+skills:
+  external_dirs:
+    - /opt/data/external-skills
+
+# ── Telegram Platform (group + topics) ────────────────────
+# Bot diaktifkan otomatis saat TELEGRAM_BOT_TOKEN ada di .env.
+# TELEGRAM_ALLOWED_USERS membatasi siapa yang boleh chat dengan Marsha.
+#
+# Grup "Marsha Trading" + 3 topic feeder. chat_id & thread_id bukan rahasia →
+# hardcode (lebih andal daripada substitusi ${VAR} pada field numerik). Tiap
+# topic = tujuan `--deliver` untuk satu cron feeder (news-scout/sentiment-scout/
+# fundamentals-fetcher) — murni output data mentah, BUKAN laporan pipeline
+# analisis (itu ke `origin`/General, lihat skill marsha-orchestrator).
+platforms:
+  telegram:
+    extra:
+      group_topics:
+        - chat_id: -1003772275284                   # grup "Marsha Trading"
+          topics:
+            - { name: News,        thread_id: 2 }   # feeder: news-scout
+            - { name: Sentiment,   thread_id: 3 }   # feeder: sentiment-scout
+            - { name: Fundamentals, thread_id: 5 }  # feeder: fundamentals-fetcher
+
+# ── Telegram Behaviour (1 channel chat, sisanya output-only) ──
+# Channel chat utama = topic "General". 3 topic feeder di atas bersifat OUTPUT-ONLY:
+# Marsha TETAP bisa POSTING (dari cron) ke sana, tapi TIDAK merespons pesan di sana.
+telegram:
+  require_mention: false                # di "General", balas semua pesan tanpa perlu tag @marsha
+  ignored_threads: [2, 3, 5]            # output-only — Marsha diam (tak ngobrol) di topik ini.
+                                         # Ini juga berarti balasan approve/reject WAJIB diketik di
+                                         # General (deliver="origin"), bukan di topic-topic ini.
 
 # ── Provider Routing ──────────────────────────────────────
 provider_routing:
   sort: "throughput"                            # prioritaskan kecepatan respons
+
+# ── Cron Delivery ──────────────────────────────────────────
+# Default Hermes membungkus SETIAP output cron dengan header "Cronjob
+# Response: <name> (job_id: ...)" + footer "to stop this job...". Dimatikan
+# karena ketiga feeder (news-scout/sentiment-scout/fundamentals-fetcher)
+# murni output data mentah untuk dibaca, bukan reminder interaktif — wrapper
+# itu cuma noise di digest yang sudah diformat sendiri oleh masing-masing script.
+cron:
+  wrap_response: false
